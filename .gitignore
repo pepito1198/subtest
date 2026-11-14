@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.subtest/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+playwright-report/
+test-results/

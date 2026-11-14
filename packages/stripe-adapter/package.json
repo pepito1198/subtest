@@ -1,0 +1,1 @@
+{"name":"@subtest/stripe-adapter","version":"0.1.0","private":true,"license":"Apache-2.0","type":"module","types":"./dist/index.d.ts","exports":{".":{"types":"./dist/index.d.ts","import":"./dist/index.js"}},"scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","test":"vitest run"},"dependencies":{"@subtest/core":"workspace:*","stripe":"^23.1.0"}}

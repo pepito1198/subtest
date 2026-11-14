@@ -1,0 +1,1 @@
+{"name":"@subtest/example-nextjs-checkout","private":true,"scripts":{"dev":"next dev","build":"next build"},"dependencies":{"next":"^16.0.0","react":"^19.2.0","react-dom":"^19.2.0","stripe":"^23.1.0"},"devDependencies":{"@types/node":"^22.10.0","@types/react":"^19.0.0","@types/react-dom":"^19.0.0","typescript":"^5.7.2"}}

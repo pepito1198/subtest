@@ -1,0 +1,51 @@
+version: 1
+project: my-nextjs-app
+baseUrl: http://localhost:3000
+stripe:
+  clock:
+    enabled: true
+    # A clock advances simulated time for supported test-mode objects.
+    advanceTimeoutMs: 30000
+  webhook:
+    # Optional app-side evidence endpoint; the app owns Stripe CLI forwarding.
+    endpoint: http://localhost:3000/api/stripe/test-evidence
+    waitForEvents: true
+    timeoutMs: 20000
+browser:
+  engine: chromium
+  headless: true
+  actionTimeoutMs: 10000
+  navigationTimeoutMs: 30000
+history:
+  database: .subtest/history.sqlite
+  retainDays: 30
+scenarios:
+  - id: checkout-monthly
+    name: Checkout creates an active monthly subscription
+    customer:
+      email: subtest+checkout@example.invalid
+    product:
+      priceId: price_test_monthly
+    checkout:
+      path: /
+      # The application-specific flow is explicit and selector-based.
+      steps:
+        - click: { role: link, name: "Choose monthly" }
+        - fill: { label: "Email", value: "${scenario.customer.email}" }
+        - stripeCheckout: { paymentMethod: "4242424242424242" }
+      expect:
+        urlIncludes: "/success"
+    assertions:
+      - subscription.status: active
+      - subscription.interval: month
+  - id: subscription-renewal
+    name: Subscription renews after one billing period using a test clock
+    customer:
+      email: subtest+renewal@example.invalid
+    product:
+      priceId: price_test_monthly
+    clock:
+      advanceBy: 32d
+    assertions:
+      - subscription.status: active
+      - invoice.count: 2

@@ -1,0 +1,32 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #14221d; background: #f5f7f4; font-synthesis: none; text-rendering: optimizeLegibility; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.shell { max-width: 960px; margin: 0 auto; padding: 72px 28px; }
+header { margin-bottom: 42px; }
+.eyebrow { color: #527465; font-size: 11px; font-weight: 750; letter-spacing: .12em; }
+h1 { margin: 10px 0 8px; font-size: 42px; letter-spacing: -.04em; }
+header p, .card > p, footer { color: #63716a; line-height: 1.6; }
+.card { padding: 28px; border: 1px solid #dfe7e1; border-radius: 18px; background: white; box-shadow: 0 8px 28px #18372a0a; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+h2 { margin: 7px 0 0; font-size: 21px; }
+.badge { padding: 7px 10px; border-radius: 999px; color: #23624b; background: #e9f6ee; font-size: 10px; font-weight: 750; letter-spacing: .08em; }
+code { padding: 2px 5px; border-radius: 5px; background: #f0f3f0; }
+.empty-state { margin-top: 24px; padding: 36px 16px; border: 1px dashed #ccd8cf; border-radius: 12px; color: #75847b; text-align: center; }
+footer { margin-top: 20px; font-size: 12px; }
+.error { color: #a52f2f; background: #fff0ef; padding: 12px; border-radius: 9px; }
+.back { border: 0; background: transparent; color: #23624b; font: inherit; cursor: pointer; margin-bottom: 20px; }
+.run-list { margin-top: 20px; }
+.run-row { width: 100%; display: grid; grid-template-columns: 1fr 120px 120px; gap: 18px; align-items: center; padding: 16px 4px; border: 0; border-top: 1px solid #edf1ed; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.run-row:hover { background: #f7faf7; }
+.run-row span:first-child { display: grid; gap: 4px; }
+.run-row small, .scenario p { color: #738078; }
+.dot { display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: #9ba9a0; }
+.dot.passed { background: #27905e; }
+.dot.failed, .dot.error { background: #c44d45; }
+.dot.running { background: #d39a24; }
+.scenario { margin-top: 24px; padding-top: 20px; border-top: 1px solid #e8eee9; }
+.scenario h3 { margin: 0; font-size: 16px; }
+.assertion, .events { display: grid; gap: 5px; padding: 12px 0; border-top: 1px solid #edf1ed; font-size: 13px; }
+.assertion span, .assertion small, .events span { color: #68776f; }
+.events { margin-top: 12px; }
+@media (max-width: 620px) { .shell { padding: 36px 16px; } .run-row { grid-template-columns: 1fr; gap: 8px; } .card { padding: 20px; } }
