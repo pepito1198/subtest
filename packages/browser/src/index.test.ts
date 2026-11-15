@@ -50,5 +50,41 @@ describe("Checkout contract browser flow", () => {
       checkoutSessionId: "cs_test_smokesession123",
       checkoutStatus: "not_attempted",
     });
+    expect(result.pageUrl).toBe(`${baseUrl}/api/checkout`);
+  }, 30_000);
+
+  it("captures a direct Checkout URL without opening it by default", async () => {
+    server = createServer((request, response) => {
+      if (request.url === "/") {
+        response.writeHead(200, { "content-type": "text/html" });
+        response.end('<a href="https://checkout.stripe.com/c/pay/cs_test_directsession456">Subscribe</a>');
+        return;
+      }
+      response.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Could not bind browser test server.");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const config = ConfigSchema.parse({
+      version: 1,
+      project: "browser-direct-checkout-test",
+      baseUrl,
+      scenarios: [{
+        id: "monthly",
+        name: "Monthly Checkout",
+        customer: { email: "qa@example.invalid" },
+        product: { priceId: "price_test_monthly" },
+        checkout: { path: "/", steps: [{ click: { role: "link", name: "Subscribe" } }] },
+      }],
+    });
+
+    const result = await runBrowserScenario(config, config.scenarios[0]!, false, false);
+    expect(result).toMatchObject({
+      checkoutSessionId: "cs_test_directsession456",
+      checkoutStatus: "not_attempted",
+    });
+    expect(result.pageUrl).toBe(`${baseUrl}/`);
   }, 30_000);
 });

@@ -11,6 +11,27 @@ export interface BrowserScenarioResult {
   visibleError?: string;
 }
 
+function stripeCheckoutSession(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== "checkout.stripe.com") return undefined;
+    return /\b(cs_test_[A-Za-z0-9]+)\b/.exec(parsed.href)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+function safePageUrl(page: Page, fallbackUrl: string): string {
+  try {
+    const current = new URL(page.url());
+    if (current.protocol === "http:" || current.protocol === "https:") return current.origin + current.pathname;
+  } catch {
+    // Return the last known application URL for opaque browser error pages.
+  }
+  const fallback = new URL(fallbackUrl);
+  return fallback.origin + fallback.pathname;
+}
+
 async function visibleCheckoutError(page: Page): Promise<string | undefined> {
   try {
     const raw = await page.locator('[role="alert"], [aria-live="assertive"]').allTextContents();
@@ -45,11 +66,46 @@ export async function runBrowserScenario(config: SubtestConfig, scenario: Scenar
   page.setDefaultTimeout(config.browser.actionTimeoutMs);
   page.setDefaultNavigationTimeout(config.browser.navigationTimeoutMs);
   try {
-    await context.route("https://checkout.stripe.com/**", async (route) => {
-      const match = /\b(cs_test_[A-Za-z0-9]+)\b/.exec(route.request().url());
-      if (match) checkoutSessionId = match[1];
-      if (!browserSmoke) await route.abort();
-      else await route.continue();
+    const appOrigin = new URL(config.baseUrl).origin;
+    const fallbackPageUrl = new URL(scenario.checkout.path, config.baseUrl).toString();
+    await context.route("**/*", async (route) => {
+      const request = route.request();
+      const requestUrl = new URL(request.url());
+      if (requestUrl.hostname === "checkout.stripe.com") {
+        checkoutSessionId ??= stripeCheckoutSession(request.url());
+        if (!browserSmoke || !checkoutSessionId) {
+          await route.abort();
+          return;
+        }
+        await route.continue();
+        return;
+      }
+
+      // Chromium may follow a 3xx Checkout redirect without invoking a route
+      // for the redirected document. Inspect app navigations before Chromium
+      // follows them so the default contract check never opens hosted Checkout.
+      if (request.isNavigationRequest() && requestUrl.origin === appOrigin) {
+        const response = await route.fetch({ maxRedirects: 0 });
+        const location = response.headers()["location"];
+        if (location && response.status() >= 300 && response.status() < 400) {
+          const destination = new URL(location, request.url());
+          if (destination.hostname === "checkout.stripe.com") {
+            checkoutSessionId ??= stripeCheckoutSession(destination.href);
+            if (!browserSmoke) {
+              await route.fulfill({
+                status: 200,
+                contentType: "text/plain; charset=utf-8",
+                body: "SubTest captured the Stripe Checkout Session.",
+              });
+              return;
+            }
+          }
+        }
+        await route.fulfill({ response });
+        return;
+      }
+
+      await route.continue();
     });
     await page.goto(new URL(scenario.checkout.path, config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
     for (const step of scenario.checkout.steps) {
@@ -87,16 +143,16 @@ export async function runBrowserScenario(config: SubtestConfig, scenario: Scenar
     if (browserSmoke) {
       const expectedUrl = scenario.checkout.expect.urlIncludes;
       if (expectedUrl && !page.url().includes(expectedUrl)) throw new Error(`Checkout completed at an unexpected URL. Expected a URL containing "${expectedUrl}".`);
-      return { checkoutSessionId, checkoutStatus: "completed", pageUrl: new URL(page.url()).origin + new URL(page.url()).pathname, title: await page.title() };
+      return { checkoutSessionId, checkoutStatus: "completed", pageUrl: safePageUrl(page, fallbackPageUrl), title: await page.title() };
     }
-    return { checkoutSessionId, checkoutStatus: "not_attempted", pageUrl: new URL(page.url()).origin + new URL(page.url()).pathname, title: await page.title(), warning: "Browser payment entry was skipped; the Checkout Session was inspected through the Stripe API." };
+    return { checkoutSessionId, checkoutStatus: "not_attempted", pageUrl: safePageUrl(page, fallbackPageUrl), title: await page.title(), warning: "Browser payment entry was skipped; the Checkout Session was inspected through the Stripe API." };
   } catch (error) {
     if (!checkoutSessionId) throw error;
     const visibleError = browserSmoke ? await visibleCheckoutError(page) : undefined;
     return {
       checkoutSessionId,
       checkoutStatus: browserSmoke ? "blocked" : "not_attempted",
-      pageUrl: new URL(page.url()).origin + new URL(page.url()).pathname,
+      pageUrl: safePageUrl(page, new URL(scenario.checkout.path, config.baseUrl).toString()),
       title: await page.title().catch(() => ""),
       warning: (error instanceof Error ? error.message : String(error)).slice(0, 500),
       ...(visibleError ? { visibleError } : {}),
