@@ -1,5 +1,5 @@
-export type RunStatus = "starting" | "running" | "passed" | "failed" | "error" | "interrupted";
-export type ScenarioStatus = "pending" | "running" | "passed" | "failed" | "error" | "interrupted";
+export type RunStatus = "starting" | "running" | "passed" | "partial" | "failed" | "error" | "interrupted";
+export type ScenarioStatus = "pending" | "running" | "passed" | "partial" | "failed" | "error" | "interrupted";
 
 export interface RunSummary {
   id: string;
@@ -30,4 +30,8 @@ export interface SafeError {
   stage: string;
   retryable: boolean;
   scenarioId?: string;
+}
+
+export function runExitCode(failed: number, partial: number, strictBrowser: boolean): 0 | 1 {
+  return failed > 0 || (strictBrowser && partial > 0) ? 1 : 0;
 }

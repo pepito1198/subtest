@@ -1,26 +1,59 @@
 import { chromium, type Page, type Locator } from "playwright";
 import type { Scenario, SubtestConfig } from "@subtest/core";
 
-type Selector = { role?: string | undefined; name?: string | undefined; label?: string | undefined; text?: string | undefined; css?: string | undefined };
+type Selector = { role?: string | undefined; name?: string | undefined; label?: string | undefined; placeholder?: string | undefined; text?: string | undefined; css?: string | undefined };
+export interface BrowserScenarioResult {
+  checkoutSessionId: string;
+  checkoutStatus: "completed" | "not_attempted" | "blocked";
+  pageUrl: string;
+  title: string;
+  warning?: string;
+  visibleError?: string;
+}
+
+async function visibleCheckoutError(page: Page): Promise<string | undefined> {
+  try {
+    const raw = await page.locator('[role="alert"], [aria-live="assertive"]').allTextContents();
+    const safe = raw.map((value) => value.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[email]")
+      .replace(/\b\d{12,19}\b/g, "[number]")
+      .replace(/\b(?:sk|rk)_(?:test|live)_[A-Za-z0-9]+\b/g, "[Stripe key]")
+      .replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 3).join(" · ").slice(0, 300);
+    return safe || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function locate(page: Page, selector: Selector): Locator {
   if (selector.role) return page.getByRole(selector.role as Parameters<Page["getByRole"]>[0], selector.name ? { name: selector.name } : undefined);
   if (selector.label) return page.getByLabel(selector.label);
+  if (selector.placeholder) return page.getByPlaceholder(selector.placeholder);
   if (selector.text) return page.getByText(selector.text, { exact: true });
   if (selector.css) return page.locator(selector.css);
   throw new Error("A browser action needs role/name, label, text, or css selector.");
 }
 
-export async function runBrowserScenario(config: SubtestConfig, scenario: Scenario, headed: boolean): Promise<{ url: string; title: string }> {
+export async function runBrowserScenario(config: SubtestConfig, scenario: Scenario, headed: boolean, browserSmoke: boolean): Promise<BrowserScenarioResult> {
   if (!scenario.checkout) throw new Error("This scenario does not define a browser checkout flow.");
-  const browser = await chromium.launch({ headless: !headed && config.browser.headless });
+  const browser = await chromium.launch({
+    headless: !headed && config.browser.headless,
+    ...(process.env.SUBTEST_CHROMIUM_CHANNEL === "chrome" ? { channel: "chrome" as const } : {}),
+  });
   const context = await browser.newContext();
   const page = await context.newPage();
+  let checkoutSessionId: string | undefined;
   page.setDefaultTimeout(config.browser.actionTimeoutMs);
   page.setDefaultNavigationTimeout(config.browser.navigationTimeoutMs);
   try {
+    await context.route("https://checkout.stripe.com/**", async (route) => {
+      const match = /\b(cs_test_[A-Za-z0-9]+)\b/.exec(route.request().url());
+      if (match) checkoutSessionId = match[1];
+      if (!browserSmoke) await route.abort();
+      else await route.continue();
+    });
     await page.goto(new URL(scenario.checkout.path, config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
     for (const step of scenario.checkout.steps) {
+      if (!browserSmoke && checkoutSessionId) continue;
       if ("navigate" in step) {
         await page.goto(new URL(step.navigate, config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
       } else if ("click" in step) {
@@ -34,6 +67,7 @@ export async function runBrowserScenario(config: SubtestConfig, scenario: Scenar
         if (step.expect.urlIncludes && !page.url().includes(step.expect.urlIncludes)) throw new Error(`Expected URL to include ${step.expect.urlIncludes}; current URL was ${new URL(page.url()).origin}${new URL(page.url()).pathname}.`);
         if (step.expect.text && !(await page.getByText(step.expect.text).isVisible())) throw new Error(`Expected text "${step.expect.text}" to be visible.`);
       } else if ("stripeCheckout" in step) {
+        if (!browserSmoke) continue;
         const payment = step.stripeCheckout.paymentMethod;
         if (payment) {
           const card = page.getByLabel(/card number/i).first();
@@ -49,9 +83,24 @@ export async function runBrowserScenario(config: SubtestConfig, scenario: Scenar
         }
       }
     }
-    const expectedUrl = scenario.checkout.expect.urlIncludes;
-    if (expectedUrl && !page.url().includes(expectedUrl)) throw new Error(`Checkout completed at an unexpected URL. Expected a URL containing "${expectedUrl}".`);
-    return { url: new URL(page.url()).origin + new URL(page.url()).pathname, title: await page.title() };
+    if (!checkoutSessionId) throw new Error("CHECKOUT_SESSION_NOT_FOUND: The app flow did not redirect to a Stripe test Checkout Session.");
+    if (browserSmoke) {
+      const expectedUrl = scenario.checkout.expect.urlIncludes;
+      if (expectedUrl && !page.url().includes(expectedUrl)) throw new Error(`Checkout completed at an unexpected URL. Expected a URL containing "${expectedUrl}".`);
+      return { checkoutSessionId, checkoutStatus: "completed", pageUrl: new URL(page.url()).origin + new URL(page.url()).pathname, title: await page.title() };
+    }
+    return { checkoutSessionId, checkoutStatus: "not_attempted", pageUrl: new URL(page.url()).origin + new URL(page.url()).pathname, title: await page.title(), warning: "Browser payment entry was skipped; the Checkout Session was inspected through the Stripe API." };
+  } catch (error) {
+    if (!checkoutSessionId) throw error;
+    const visibleError = browserSmoke ? await visibleCheckoutError(page) : undefined;
+    return {
+      checkoutSessionId,
+      checkoutStatus: browserSmoke ? "blocked" : "not_attempted",
+      pageUrl: new URL(page.url()).origin + new URL(page.url()).pathname,
+      title: await page.title().catch(() => ""),
+      warning: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+      ...(visibleError ? { visibleError } : {}),
+    };
   } finally {
     await context.close();
     await browser.close();

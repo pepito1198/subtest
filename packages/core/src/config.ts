@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 
-const selector = z.object({ role: z.string().optional(), name: z.string().optional(), label: z.string().optional(), text: z.string().optional(), css: z.string().optional() }).strict();
+const selector = z.object({ role: z.string().optional(), name: z.string().optional(), label: z.string().optional(), placeholder: z.string().optional(), text: z.string().optional(), css: z.string().optional() }).strict();
 const action = z.union([
   z.object({ navigate: z.string() }).strict(),
   z.object({ click: selector }).strict(),
@@ -13,6 +13,10 @@ const action = z.union([
   z.object({ stripeCheckout: z.object({ paymentMethod: z.enum(["4242424242424242"]).optional() }).strict() }).strict(),
 ]);
 const assertion = z.union([
+  z.object({ "checkout.session.mode": z.string() }).strict(),
+  z.object({ "checkout.session.status": z.string() }).strict(),
+  z.object({ "checkout.session.payment_status": z.string() }).strict(),
+  z.object({ "checkout.session.price": z.string() }).strict(),
   z.object({ "subscription.status": z.string() }).strict(),
   z.object({ "subscription.interval": z.string() }).strict(),
   z.object({ "invoice.count": z.number().int().nonnegative() }).strict(),
@@ -31,7 +35,7 @@ export const ConfigSchema = z.object({
   browser: z.object({ engine: z.literal("chromium").default("chromium"), headless: z.boolean().default(true), actionTimeoutMs: z.number().int().positive().default(10000), navigationTimeoutMs: z.number().int().positive().default(30000) }).default({}),
   history: z.object({ database: z.string().default(".subtest/history.sqlite"), retainDays: z.number().int().positive().default(30) }).default({}),
   scenarios: z.array(z.object({
-    id: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/),
+    id: z.string().max(64).regex(/^[a-z0-9][a-z0-9_-]*$/),
     name: z.string().min(1),
     customer: z.object({ email: z.string().email() }).optional(),
     product: z.object({ priceId: z.string().startsWith("price_") }),
@@ -39,7 +43,13 @@ export const ConfigSchema = z.object({
     clock: z.object({ advanceBy: z.string().regex(/^\d+[smhd]$/) }).optional(),
     assertions: z.array(assertion).default([]),
   }).strict()).min(1),
-}).strict();
+}).strict().superRefine((config, context) => {
+  const ids = new Set<string>();
+  config.scenarios.forEach((scenario, index) => {
+    if (ids.has(scenario.id)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["scenarios", index, "id"], message: "Scenario IDs must be unique." });
+    ids.add(scenario.id);
+  });
+});
 
 export type SubtestConfig = z.infer<typeof ConfigSchema>;
 export type Scenario = SubtestConfig["scenarios"][number];

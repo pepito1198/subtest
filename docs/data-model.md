@@ -1,6 +1,6 @@
 # Local SQLite data model
 
-The history database is created at the configured path (default .subtest/history.sqlite). Timestamps are UTC ISO 8601 text. Foreign keys and WAL mode are enabled. The current v1 schema is embedded in the history package and applied transactionally when the CLI opens the database.
+The history database is created at the configured path (default .subtest/history.sqlite). Timestamps are UTC ISO 8601 text. Foreign keys and WAL mode are enabled. Schema migrations are embedded in the history package and applied transactionally when the CLI opens the database.
 
 ~~~sql
 CREATE TABLE schema_migrations (
@@ -81,6 +81,22 @@ CREATE TABLE artifacts (
   created_at TEXT NOT NULL,
   expires_at TEXT
 );
+
+CREATE TABLE payment_diagnostics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scenario_run_id TEXT NOT NULL REFERENCES scenario_runs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  explanation TEXT NOT NULL,
+  next_step TEXT NOT NULL,
+  confidence TEXT NOT NULL,
+  source TEXT NOT NULL,
+  code TEXT,
+  decline_code TEXT,
+  field TEXT,
+  payment_intent_id TEXT,
+  created_at TEXT NOT NULL
+);
 ~~~
 
 ## Data rules
@@ -89,6 +105,8 @@ CREATE TABLE artifacts (
 - Expected and actual assertion values are serialized from the allowlisted assertion paths.
 - Do not persist raw Stripe objects, secret key material, webhook bodies, cookies, or payment fields.
 - created_by_subtest distinguishes clock/customer/subscription fixtures created by the runner from a customer discovered after an app-owned Checkout flow. It does not authorize remote deletion.
+- `scenario_runs.status` may be `partial` when the Checkout Session contract was verified but payment-dependent assertions were skipped or optional browser automation was blocked. A partial run is distinct from a failed assertion.
+- `payment_diagnostics` stores only normalized Stripe error/decline codes, a deterministic explanation, confidence, and a suggested next step. It never stores raw Stripe objects, card data, or unfiltered browser page text.
 - Stripe event rows contain provider-generated event IDs and types. app_evidence_status is confirmed/not_confirmed only when the local evidence endpoint is configured; otherwise it is null.
 - Screenshots and Playwright traces are not currently captured. The artifacts table is reserved for opt-in local artifacts in a later release.
 - Pruning deletes local run rows and dependent evidence only. It never deletes Stripe resources.

@@ -38,15 +38,17 @@ steps:
   - waitFor: { urlIncludes: "/success" }
 ```
 
-Supported selectors should be role/name, label, placeholder, or text. Raw CSS is an explicitly discouraged escape hatch. No `eval`, arbitrary JavaScript, or shell command step is allowed.
+Supported selectors are role/name, label, placeholder, or text. Raw CSS is an explicitly discouraged escape hatch. Browser navigation steps must remain on the configured app origin; SubTest follows only the Stripe Checkout redirect outside it. No `eval`, arbitrary JavaScript, or shell command step is allowed. Scenario IDs must be unique and at most 64 characters.
 
-Assertions use a finite, documented path vocabulary such as `subscription.status`, `subscription.interval`, `invoice.count`, `invoice.latest.status`, and `customer.email`. Unknown assertion paths are configuration errors. Expected values are typed. The runner records actual value and evidence source (Stripe API, browser, or application endpoint).
+Assertions use a finite path vocabulary: `checkout.session.mode`, `checkout.session.status`, `checkout.session.payment_status`, `checkout.session.price`, `subscription.status`, `subscription.interval`, `invoice.count`, and `invoice.latest.status`. Unknown assertion paths are configuration errors. `checkout.session.price` passes when the expected Price ID appears in the Session line items. Every Checkout scenario automatically checks subscription mode and the configured Price. The runner records actual values and evidence source.
 
 `clock.advanceBy` accepts a duration such as `32d` only when Test Clocks are enabled and the relevant objects support it. A clock scenario must not also define browser Checkout: the runner cannot attach a generic app-created customer to the clock. No silent fallback from a clock to waiting in real time.
 
-The optional webhook endpoint is polled by SubTest and must return a JSON object with a processedEventIds array of Stripe event IDs. It is application evidence only; Stripe CLI forwarding and signature verification remain the application's responsibility. The sample app exposes this endpoint only in local test mode.
+The optional webhook endpoint is polled by SubTest and must return a JSON object with a processedEventIds array of Stripe event IDs. It is application evidence only; Stripe CLI forwarding and signature verification remain the application's responsibility. The sample app exposes this endpoint only in local test mode. If Checkout has not completed, there is no paid subscription webhook to verify; use a separate lifecycle scenario to exercise webhook handling.
 
-Checkout and Test Clock are separate scenario modes. Checkout scenarios use browser automation and identify the resulting Stripe customer by email. Clock scenarios create their own test customer and subscription directly through the Stripe test API, then advance the clock. Do not combine both modes in one scenario.
+Checkout and Test Clock are separate scenario modes. A normal Checkout run automates the app journey up to the Stripe redirect, captures the `cs_test_...` Session ID, and verifies the Session through Stripe's API; it does not enter payment details. Add `--browser-smoke` to attempt the hosted payment UI. If that step is blocked, or configured payment/webhook checks need a completed payment, SubTest retains the Session checks and records the result as `partial`; dependent assertions are marked skipped. `--strict-browser` makes a partial smoke result return a failing process status for CI. Clock scenarios create their own test customer and subscription directly through Stripe's test API, then advance the clock. Do not combine both modes in one scenario.
+
+For local development only, set `SUBTEST_CHROMIUM_CHANNEL=chrome` to use an installed Google Chrome instead of Playwright's bundled Chromium. CI uses the bundled Chromium by default.
 
 ## Environment references
 

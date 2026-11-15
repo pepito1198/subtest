@@ -28,4 +28,17 @@ describe("HistoryStore", () => {
     expect(store.listRuns()).toHaveLength(0);
     store.close();
   });
+
+  it("persists normalized payment diagnoses without raw payment details", () => {
+    const dir = mkdtempSync(join(tmpdir(), "subtest-diagnosis-"));
+    temporaryDirectories.push(dir);
+    const store = new HistoryStore(join(dir, "history.sqlite"));
+    store.createRun({ id: "run-diagnosis", project: "demo", configPath: "/tmp/subtest.yml", configHash: "hash", startedAt: new Date().toISOString(), appOrigin: "http://localhost:3000", stripeAccountId: "acct_test", stripeApiVersion: "test" });
+    store.createScenario({ id: "scenario-diagnosis", runId: "run-diagnosis", key: "checkout", name: "Checkout", ordinal: 0, startedAt: new Date().toISOString() });
+    store.paymentDiagnosis("scenario-diagnosis", {
+      kind: "decline", title: "Fondi insufficienti", explanation: "Stripe reports insufficient funds.", nextStep: "Use a different test payment method.", confidence: "confirmed", source: "stripe", code: "card_declined", declineCode: "insufficient_funds", paymentIntentId: "pi_test_1",
+    });
+    expect(store.getRun("run-diagnosis")).toMatchObject({ scenarios: [{ paymentDiagnostics: [{ kind: "decline", decline_code: "insufficient_funds", payment_intent_id: "pi_test_1" }] }] });
+    store.close();
+  });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ConfigSchema, isLocalUrl, redact } from "./config.js";
+import { runExitCode } from "./contracts.js";
 
 const base = {
   version: 1,
@@ -26,6 +27,11 @@ describe("config", () => {
     expect(ConfigSchema.safeParse({ ...base, basUrl: "http://localhost" }).success).toBe(false);
   });
 
+  it("rejects duplicate scenario IDs before a run can reach Stripe", () => {
+    const duplicate = { ...base.scenarios[0]!, name: "A second scenario with the same id" };
+    expect(ConfigSchema.safeParse({ ...base, scenarios: [...base.scenarios, duplicate] }).success).toBe(false);
+  });
+
   it("rejects arbitrary payment card values in the Checkout helper", () => {
     const input: unknown = {
       ...base,
@@ -42,5 +48,11 @@ describe("config", () => {
     expect(isLocalUrl("https://example.com")).toBe(false);
     expect(redact("key sk_test_abc and secret whsec_xyz")).toContain("[REDACTED_STRIPE_KEY]");
     expect(redact("key sk_test_abc and secret whsec_xyz")).toContain("[REDACTED_WEBHOOK_SECRET]");
+  });
+
+  it("keeps optional partial runs green unless strict browser mode is enabled", () => {
+    expect(runExitCode(0, 1, false)).toBe(0);
+    expect(runExitCode(0, 1, true)).toBe(1);
+    expect(runExitCode(1, 0, false)).toBe(1);
   });
 });

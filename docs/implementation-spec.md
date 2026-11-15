@@ -10,7 +10,7 @@ A developer should be able to run a checked-in YAML scenario against an explicit
 
 MVP success means:
 
-1. `subtest validate` catches malformed config, missing environment variables, non-test credentials, missing local server, and impossible feature combinations before creating Stripe objects.
+1. `subtest validate` catches malformed config, missing environment variables, non-test credentials, unreachable app URLs, and impossible feature combinations before creating Stripe objects.
 2. `subtest run` has deterministic setup, execution, cleanup policy, timeouts, useful logs, and nonzero exit status on a failed assertion.
 3. The run history and dashboard explain each scenario's steps, assertions, event evidence, and failure without retaining secrets or card data.
 4. The example shows the application responsibilities that remain application-specific: creating a Checkout Session, receiving/verifying webhooks, and exposing stable UI selectors.
@@ -31,7 +31,7 @@ subtest CLI ── config/validation ── scenario engine ── Stripe adapte
       └── local dashboard API ── React + Vite UI
 ```
 
-The CLI is the orchestration entry point. The dashboard starts a loopback-only HTTP server and reads the same SQLite database; the dashboard cannot trigger a run in the first MVP. This avoids hidden mutations from a UI and keeps the runner usable in CI. The CLI's `dashboard` command may optionally accept `--run <id>` to open a specific record.
+The CLI is the orchestration entry point. The dashboard starts a loopback-only HTTP server and reads the same SQLite database; the dashboard cannot trigger a run in the first MVP. This avoids hidden mutations from a UI and keeps the runner usable in CI.
 
 ### Runtime boundaries
 
@@ -49,16 +49,16 @@ Dependencies point inward: CLI composes adapters around core interfaces. Core mu
 
 | Command | Behavior |
 |---|---|
-| `subtest init [--template nextjs]` | Writes a commented `subtest.yml`; refuses to overwrite without `--force`. |
-| `subtest validate [--config path]` | Schema validation and read-only Stripe preflight. No resource creation. |
-| `subtest run [--scenario id] [--config path] [--headed] [--dry-run]` | Runs selected scenario(s) sequentially; persists history. `--dry-run` validates and prints planned operations without API writes/browser interaction. |
+| `subtest init [--force]` | Writes a starter `subtest.yml`; refuses to overwrite without `--force`. |
+| `subtest validate [--config path]` | Schema validation, configured app connectivity check, and read-only Stripe preflight. No resource creation. |
+| `subtest run [--scenario id] [--config path] [--headed] [--browser-smoke] [--strict-browser] [--dry-run] [--json]` | Runs selected scenarios sequentially. Default Checkout mode verifies the app-created Session without entering payment details; `--browser-smoke` opts into hosted UI automation. `--strict-browser` makes a partial smoke result fail the process. |
 | `subtest runs [--limit n]` | Lists local run history. |
 | `subtest show <run-id>` | Prints a run with assertions, event summaries, timings, and redacted failure details. |
 | `subtest dashboard [--host 127.0.0.1] [--port 4178]` | Starts loopback dashboard API and serves Vite assets; rejects non-loopback host by default. |
 | `subtest clean [--older-than days]` | Prunes local history using the configured retention by default. Does not delete Stripe resources. |
 | `subtest version` | Prints version/build metadata. |
 
-Exit codes: `0` all selected scenarios pass; `1` one or more assertions/browser steps fail; `2` configuration/usage error; `3` Stripe credential/API preflight failure; `4` local infrastructure failure; `130` interrupted. Run output supports `--json`; list/show and validate already emit JSON.
+Exit codes: `0` all required checks pass, including optional checks recorded as `partial`; `1` an assertion fails or `--strict-browser` is set for a partial result; `2` configuration/usage error; `3` Stripe credential/API preflight failure; `4` local infrastructure failure; `130` interrupted. Run output supports `--json`.
 
 ## 4. Configuration and scenario model
 
@@ -68,9 +68,9 @@ Scenarios are sequential in v0 to avoid clock/customer cross-talk and Stripe rat
 
 ### Browser flow contract
 
-The current runner supports navigate, click, fill, wait for URL/text, assert URL/text, and a best-effort `stripeCheckout` helper. Prefer accessible roles and labels; CSS selectors are an explicit escape hatch. No arbitrary JavaScript execution in YAML. Login should be modeled as configured steps or handled by an externally supplied Playwright storage state, never guessed.
+The runner supports navigate, click, fill, wait for URL/text, assert URL/text, and a best-effort `stripeCheckout` helper. By default it runs app-owned steps, intercepts the Stripe redirect, captures the test Session ID, and verifies mode and line items through the Stripe API. `--browser-smoke` additionally opens hosted Checkout and attempts the configured payment steps. If that attempt fails after Session capture, SubTest retains the Stripe evidence, marks payment-dependent assertions skipped, and records `partial`. Prefer accessible roles and labels; CSS selectors are an explicit escape hatch. No arbitrary JavaScript execution in YAML.
 
-The Checkout helper fills accessible card fields only when the hosted page exposes them to Playwright. Stripe documents protections that can prevent automated testing of Checkout and Payment Element; the helper can fail even with a valid test card. Treat hosted Checkout browser runs as best-effort integration smoke checks. For reliable CI coverage, test app behavior with controlled fixtures and use Stripe API state checks. Never use real payment instruments. Test payment values are scenario data, not secrets.
+The Checkout helper fills accessible card fields only when the hosted page exposes them to Playwright. Stripe documents protections that can prevent automated testing of Checkout and Payment Element; the helper can fail even with a valid test card. Treat hosted Checkout runs as optional smoke checks. A Session-contract pass verifies only that the app created the expected Session; it does not prove payment completion, subscription activation, or webhook handling. Test those separately with a lifecycle scenario and explicit application webhook evidence. Never use real payment instruments.
 
 ### Application contract
 
@@ -86,10 +86,10 @@ For each invocation:
 4. Validate feature support: if clock requested, require a lifecycle scenario without generic browser Checkout, check account/API support and scenario object compatibility. If a clock cannot be used, fail before resource creation; no silent wall-clock fallback.
 5. Create resources explicitly requested by fixture declarations (customer and, if configured, test clock); record IDs immediately. Do not create products/prices by default; require existing `priceId` or explicit fixture creation flag. Add run/scenario metadata to Stripe objects where supported (`subtest_run_id`, `subtest_scenario_id`); keep values non-sensitive.
 6. Start app only when config explicitly provides a command; launch as a child process with bounded startup wait, process group cleanup, inherited minimal environment, and redacted output. MVP may instead require developer to start app separately; make this first release simpler unless needed by the example.
-7. Create isolated Playwright context and run browser steps. The current MVP does not capture screenshots or traces.
-8. Observe browser completion and poll Stripe API for expected subscription/session state with exponential backoff and deadline. Webhook event delivery and application processing are distinct checks. Record event IDs/types/timestamps and delivery status when available; do not treat polling Stripe's Events API as proof the app received an event.
+7. Create isolated Playwright context and run app-owned browser steps. In default mode intercept the redirect, capture the `cs_test_...` ID, and retrieve the Session from Stripe. With `--browser-smoke`, continue into the hosted UI and attempt payment entry.
+8. Verify the Session's subscription mode and configured Price independently of payment form automation. If optional browser automation is blocked after Session capture, retain these checks, mark payment-dependent assertions skipped, and record a `partial` result. Once Stripe reports a completed Session, inspect its customer/subscription and configured app webhook evidence.
 9. If configured, advance Test Clock by the scenario duration and await clock status `ready` with timeout. Poll expected invoices/subscription state and optionally application evidence after clock advancement. Clock advancement is asynchronous; don't assume a fixed delay means completion.
-10. Evaluate assertions and persist per-assertion actual/expected/evidence. Mark scenario/run `passed`, `failed`, or `error`. Store sanitized error code/message and timing.
+10. Evaluate assertions and persist per-assertion actual/expected/evidence. Mark scenario/run `passed`, `partial`, `failed`, or `error`. Optional browser smoke failures are partial by default; `--strict-browser` returns nonzero to gate CI. Store sanitized error code/message and timing.
 11. Cleanup Playwright context, spawned app, and any temporary resources. Stripe resources remain by default to support debugging; mark them with metadata and show a cleanup command hint. Optional later policy may cancel subscriptions and delete only resources proven to be owned by the run. Never delete arbitrary or pre-existing Stripe data.
 12. Close DB and return documented exit code. On SIGINT, stop launching new scenarios, mark active work interrupted, close browser/processes, persist partial history, and exit 130.
 
@@ -162,7 +162,7 @@ Use deterministic fakes for clock progression and API responses. Tests that need
 
 ## 13. CI and release
 
-GitHub Actions on pull requests and main: checkout; setup Node 22; setup pnpm; frozen lockfile install; lint/typecheck/build/unit tests; dependency audit/SBOM can be added before release; cache pnpm store. Do not expose Stripe secrets to PR workflows. A manually dispatched protected smoke workflow may use dedicated test credentials. Release workflow tags `v*`, builds CLI bundles/packages, attaches provenance/SBOM and changelog; publish npm only after package name and ownership are confirmed. Repository public identity and npm namespace remain project-owner decisions; this scaffold uses the neutral `@subtest/*` scope and `subtest` command.
+GitHub Actions on pull requests and main: checkout; setup Node 22; setup pnpm; frozen lockfile install; install Chromium; build workspace packages; run typechecks and unit tests. Do not expose Stripe secrets to PR workflows. A manually dispatched protected smoke workflow may use dedicated test credentials. Release workflow tags `v*`, builds CLI bundles/packages, attaches provenance/SBOM and changelog; publish npm only after package name and ownership are confirmed. Repository public identity and npm namespace remain project-owner decisions; this scaffold uses the neutral `@subtest/*` scope and `subtest` command.
 
 Branch protections, CODEOWNERS, security reporting, contribution guide, and release process should be established before inviting external contributions.
 

@@ -19,6 +19,49 @@ export class StripeAdapter {
     if (!price.recurring) throw new Error("STRIPE_PRICE_NOT_RECURRING: " + priceId + " is not recurring.");
     return { id: price.id, active: price.active, interval: price.recurring.interval };
   }
+  async checkoutSessionState(sessionId: string): Promise<{ id: string; livemode: boolean; mode: string | null; status: string | null; paymentStatus: string | null; customerId?: string; subscriptionId?: string; priceIds: string[]; paymentIntent?: { id: string; status: string; errorCode?: string; declineCode?: string; errorMessage?: string; errorParam?: string } }> {
+    const session = await this.client.checkout.sessions.retrieve(sessionId, { expand: ["customer", "subscription", "payment_intent"] });
+    if (session.livemode) throw new Error("STRIPE_LIVE_OBJECT: Checkout Session " + session.id + " is a live-mode object.");
+    const priceIds: string[] = [];
+    let startingAfter: string | undefined;
+    while (true) {
+      const page = await this.client.checkout.sessions.listLineItems(session.id, {
+        limit: 100,
+        expand: ["data.price"],
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      for (const item of page.data) {
+        if (typeof item.price === "string") priceIds.push(item.price);
+        else if (item.price) priceIds.push(item.price.id);
+      }
+      if (!page.has_more || page.data.length === 0) break;
+      startingAfter = page.data[page.data.length - 1]!.id;
+    }
+    const customerId = typeof session.customer === "string" ? session.customer : session.customer?.id;
+    const subscriptionId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
+    const paymentIntent = typeof session.payment_intent === "string"
+      ? await this.client.paymentIntents.retrieve(session.payment_intent)
+      : session.payment_intent;
+    const lastError = paymentIntent?.last_payment_error;
+    return {
+      id: session.id,
+      livemode: session.livemode,
+      mode: session.mode,
+      status: session.status,
+      paymentStatus: session.payment_status,
+      ...(customerId ? { customerId } : {}),
+      ...(subscriptionId ? { subscriptionId } : {}),
+      priceIds,
+      ...(paymentIntent ? { paymentIntent: {
+        id: paymentIntent.id,
+        status: paymentIntent.status,
+        ...(lastError?.code ? { errorCode: lastError.code } : {}),
+        ...(lastError?.decline_code ? { declineCode: lastError.decline_code } : {}),
+        ...(lastError?.message ? { errorMessage: lastError.message } : {}),
+        ...(lastError?.param ? { errorParam: lastError.param } : {}),
+      } } : {}),
+    };
+  }
   async createClock(name: string, idempotencyKey: string): Promise<string> {
     const clock = await this.client.testHelpers.testClocks.create(
       { frozen_time: Math.floor(Date.now() / 1000), name },
@@ -59,9 +102,9 @@ export class StripeAdapter {
     const customer = result.data.find((candidate) => candidate.created >= createdAfter && !("deleted" in candidate && candidate.deleted));
     return customer?.id;
   }
-  async subscriptionState(customerId: string, priceId: string): Promise<{ subscriptionId?: string; status?: string; interval?: string; invoices: number; latestInvoiceStatus?: string }> {
+  async subscriptionState(customerId: string, priceId: string, expectedSubscriptionId?: string): Promise<{ subscriptionId?: string; status?: string; interval?: string; invoices: number; latestInvoiceStatus?: string }> {
     const subscriptions = await this.client.subscriptions.list({ customer: customerId, limit: 100, status: "all", expand: ["data.items.data.price"] });
-    const subscription = subscriptions.data.find((candidate) => candidate.items.data.some((item) => {
+    const subscription = subscriptions.data.find((candidate) => (!expectedSubscriptionId || candidate.id === expectedSubscriptionId) && candidate.items.data.some((item) => {
       const price = typeof item.price === "string" ? undefined : item.price;
       return price?.id === priceId;
     }));

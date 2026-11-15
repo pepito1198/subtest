@@ -1,8 +1,9 @@
 import Database from "better-sqlite3";
 import { dirname, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
+import type { PaymentDiagnosis } from "@subtest/core";
 
-export type RunStatus = "starting" | "running" | "passed" | "failed" | "error" | "interrupted";
+export type RunStatus = "starting" | "running" | "passed" | "partial" | "failed" | "error" | "interrupted";
 
 const schema = [
   "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);",
@@ -12,6 +13,7 @@ const schema = [
   "CREATE TABLE IF NOT EXISTS stripe_resources (id INTEGER PRIMARY KEY AUTOINCREMENT, scenario_run_id TEXT NOT NULL REFERENCES scenario_runs(id) ON DELETE CASCADE, resource_type TEXT NOT NULL, stripe_id TEXT NOT NULL, created_by_subtest INTEGER NOT NULL, created_at TEXT NOT NULL, status TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');",
   "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, scenario_run_id TEXT NOT NULL REFERENCES scenario_runs(id) ON DELETE CASCADE, stripe_event_id TEXT NOT NULL, event_type TEXT NOT NULL, created_at TEXT NOT NULL, app_evidence_status TEXT, UNIQUE(scenario_run_id, stripe_event_id));",
   "CREATE TABLE IF NOT EXISTS artifacts (id INTEGER PRIMARY KEY AUTOINCREMENT, scenario_run_id TEXT NOT NULL REFERENCES scenario_runs(id) ON DELETE CASCADE, kind TEXT NOT NULL, local_path TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT);",
+  "CREATE TABLE IF NOT EXISTS payment_diagnostics (id INTEGER PRIMARY KEY AUTOINCREMENT, scenario_run_id TEXT NOT NULL REFERENCES scenario_runs(id) ON DELETE CASCADE, kind TEXT NOT NULL, title TEXT NOT NULL, explanation TEXT NOT NULL, next_step TEXT NOT NULL, confidence TEXT NOT NULL, source TEXT NOT NULL, code TEXT, decline_code TEXT, field TEXT, payment_intent_id TEXT, created_at TEXT NOT NULL);",
   "CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at DESC);",
   "CREATE INDEX IF NOT EXISTS idx_scenarios_run ON scenario_runs(run_id, ordinal);",
   "CREATE INDEX IF NOT EXISTS idx_resources_scenario ON stripe_resources(scenario_run_id);",
@@ -35,6 +37,8 @@ export class HistoryStore {
       this.db.exec(schema);
       this.db.prepare("INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(1,?,?)")
         .run("initial", new Date().toISOString());
+      this.db.prepare("INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(2,?,?)")
+        .run("payment_diagnostics", new Date().toISOString());
     });
     apply();
   }
@@ -55,6 +59,10 @@ export class HistoryStore {
     this.db.prepare("INSERT INTO assertions(scenario_run_id,ordinal,assertion_key,expected_json,actual_json,evidence_source,status,message,checked_at) VALUES(@scenarioRunId,@ordinal,@key,@expected,@actual,@evidenceSource,@status,@message,@checkedAt)")
       .run({ ...input, expected: JSON.stringify(input.expected), actual: JSON.stringify(input.actual), checkedAt: new Date().toISOString() });
   }
+  paymentDiagnosis(scenarioRunId: string, diagnosis: PaymentDiagnosis) {
+    this.db.prepare("INSERT INTO payment_diagnostics(scenario_run_id,kind,title,explanation,next_step,confidence,source,code,decline_code,field,payment_intent_id,created_at) VALUES(@scenarioRunId,@kind,@title,@explanation,@nextStep,@confidence,@source,@code,@declineCode,@field,@paymentIntentId,@createdAt)")
+      .run({ scenarioRunId, ...diagnosis, nextStep: diagnosis.nextStep, code: diagnosis.code ?? null, declineCode: diagnosis.declineCode ?? null, field: diagnosis.field ?? null, paymentIntentId: diagnosis.paymentIntentId ?? null, createdAt: new Date().toISOString() });
+  }
   addEvents(scenarioRunId: string, events: Array<{ id: string; type: string; created: number }>, processedEventIds?: Set<string>) {
     const insert = this.db.prepare("INSERT OR IGNORE INTO events(scenario_run_id,stripe_event_id,event_type,created_at,app_evidence_status) VALUES(?,?,?,?,?)");
     const tx = this.db.transaction(() => events.forEach((event) => insert.run(
@@ -67,7 +75,7 @@ export class HistoryStore {
     this.db.prepare("UPDATE runs SET status=?,finished_at=? WHERE id=?").run(status, finishedAt, id);
   }
   listRuns(limit = 25): unknown[] {
-    return this.db.prepare("SELECT r.*, COUNT(s.id) AS scenario_count, SUM(CASE WHEN s.status='passed' THEN 1 ELSE 0 END) AS passed_count, SUM(CASE WHEN s.status IN ('failed','error') THEN 1 ELSE 0 END) AS failed_count FROM runs r LEFT JOIN scenario_runs s ON s.run_id=r.id GROUP BY r.id ORDER BY r.started_at DESC LIMIT ?")
+    return this.db.prepare("SELECT r.*, COUNT(s.id) AS scenario_count, SUM(CASE WHEN s.status='passed' THEN 1 ELSE 0 END) AS passed_count, SUM(CASE WHEN s.status='partial' THEN 1 ELSE 0 END) AS partial_count, SUM(CASE WHEN s.status IN ('failed','error') THEN 1 ELSE 0 END) AS failed_count FROM runs r LEFT JOIN scenario_runs s ON s.run_id=r.id GROUP BY r.id ORDER BY r.started_at DESC LIMIT ?")
       .all(Math.max(1, Math.min(limit, 100)));
   }
   getRun(id: string): unknown {
@@ -79,6 +87,7 @@ export class HistoryStore {
       assertions: this.db.prepare("SELECT * FROM assertions WHERE scenario_run_id=? ORDER BY ordinal").all(scenario.id),
       stripeResources: this.db.prepare("SELECT * FROM stripe_resources WHERE scenario_run_id=? ORDER BY id").all(scenario.id),
       events: this.db.prepare("SELECT * FROM events WHERE scenario_run_id=? ORDER BY created_at").all(scenario.id),
+      paymentDiagnostics: this.db.prepare("SELECT * FROM payment_diagnostics WHERE scenario_run_id=? ORDER BY created_at").all(scenario.id),
       artifacts: this.db.prepare("SELECT * FROM artifacts WHERE scenario_run_id=? ORDER BY created_at").all(scenario.id),
     })) };
   }
